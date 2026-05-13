@@ -151,7 +151,8 @@ final class RecordingStore {
         guard let idx = cache.firstIndex(where: { $0.sessionId == sessionId }) else { return }
         cache[idx].syncedAt = Date()
 
-        // SDK exportAudio(.opus) outputs .opus, rename to .ogg (actual content is OGG/Opus container)
+        // SDK exportAudio(.wav) 直接输出 .wav，无需重命名
+        // 兼容旧的 .opus 文件（如果存在）
         var finalPath = localPath
         if localPath.hasSuffix(".opus") {
             let oggPath = (localPath as NSString).deletingPathExtension + ".ogg"

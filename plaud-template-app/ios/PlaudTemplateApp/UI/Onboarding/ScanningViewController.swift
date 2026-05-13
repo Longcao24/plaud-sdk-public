@@ -92,12 +92,18 @@ final class ScanningViewController: UIViewController {
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         navigationController?.setNavigationBarHidden(false, animated: animated)
+        // Add Device 流程中先断开旧设备，禁用自动重连
+        if isAddingDevice {
+            DeviceManager.shared.suppressAutoReconnect = true
+            DeviceManager.shared.disconnect()
+        }
         deviceManager.startScan()
         startScanAnimation()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        DeviceManager.shared.suppressAutoReconnect = false
         stopScanAnimation()
     }
 

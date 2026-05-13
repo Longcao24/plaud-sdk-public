@@ -399,11 +399,11 @@ final class SyncManager: SyncManagerProtocol {
         }
 
         let outputDir = RecordingStore.shared.audioDir()
-        print("[SyncManager] exportAudio: sessionId=\(next.sessionId), format=opus, dir=\(outputDir)")
+        print("[SyncManager] exportAudio: sessionId=\(next.sessionId), format=wav, dir=\(outputDir)")
         PlaudDeviceAgent.shared.exportAudio(
             sessionId: next.sessionId,
             outputDir: outputDir,
-            format: .opus,
+            format: .wav,
             channels: 1,
             callback: self
         )

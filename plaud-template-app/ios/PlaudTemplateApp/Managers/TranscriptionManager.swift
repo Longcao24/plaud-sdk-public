@@ -35,8 +35,8 @@ final class TranscriptionManager {
 
     /// Start complete transcription flow from a local audio file
     func transcribe(audioPath: String, filetype: String? = nil) {
-        // SDK-exported .opus is actually OGG/Opus container, use ogg for both filetype and extension
-        let actualType = filetype ?? "ogg"
+        // 根据文件扩展名自动检测格式
+        let actualType = filetype ?? (audioPath as NSString).pathExtension.lowercased()
 
         guard FileManager.default.fileExists(atPath: audioPath) else {
             stateSubject.send(.failed("Audio file not found: \(audioPath)"))

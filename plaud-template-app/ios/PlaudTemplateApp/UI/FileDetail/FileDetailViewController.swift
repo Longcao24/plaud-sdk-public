@@ -325,6 +325,17 @@ final class FileDetailViewController: UIViewController {
     private func loadContent() {
         titleLabel.text = file.name
         metaLabel.text = formatMeta()
+
+        // 从缓存恢复转写结果
+        if transcriptResults.isEmpty,
+           let json = file.transcriptJSON,
+           let data = json.data(using: .utf8),
+           let cached = try? JSONDecoder().decode([TranscriptionResult].self, from: data),
+           !cached.isEmpty {
+            transcriptResults = cached
+            prepareAudioPlayer()
+        }
+
         updateTabContent()
     }
 
@@ -407,7 +418,7 @@ final class FileDetailViewController: UIViewController {
                 showTranscriptResults(transcriptResults)
                 transcriptStack.isHidden = false
                 emptyStateView.isHidden = true
-                audioPlayerView.isHidden = false
+                // audioPlayerView 的显隐由 prepareAudioPlayer() 在转码完成后控制
                 progressLabel.isHidden = true
                 progressSubLabel.isHidden = true
             } else {
@@ -486,7 +497,9 @@ final class FileDetailViewController: UIViewController {
     }
 
     private func setupTranscriptionBinding() {
+        // dropFirst: 跳过 CurrentValueSubject 的当前值，避免收到上一个文件的残留 .completed 状态
         transcriptionManager.statePublisher
+            .dropFirst()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in
                 guard let self = self else { return }
@@ -500,9 +513,12 @@ final class FileDetailViewController: UIViewController {
                     self.showProgress("Processing...", sub: status)
                 case .completed(let results):
                     self.transcriptResults = results
-                    let fullText = results.map { $0.text ?? "" }.joined(separator: "\n\n")
-                    self.file.transcriptJSON = fullText
-                    RecordingStore.shared.updateTranscript(id: self.file.id, transcript: fullText)
+                    // 存储结构化 JSON（保留 speaker/timestamp），用于缓存恢复
+                    if let jsonData = try? JSONEncoder().encode(results),
+                       let jsonStr = String(data: jsonData, encoding: .utf8) {
+                        self.file.transcriptJSON = jsonStr
+                        RecordingStore.shared.updateTranscript(id: self.file.id, transcript: jsonStr)
+                    }
                     self.prepareAudioPlayer()
                     self.updateTabContent()
                 case .failed(let msg):
@@ -525,40 +541,15 @@ final class FileDetailViewController: UIViewController {
     // MARK: - Audio Playback
 
     private func prepareAudioPlayer() {
-        guard let oggPath = RecordingStore.shared.resolveAbsolutePath(for: file) else {
-            print("[FileDetail] Source file not found")
+        // 同步时已导出 WAV，直接使用
+        guard let wavPath = RecordingStore.shared.resolveAbsolutePath(for: file) else {
+            print("[FileDetail] Audio file not found, localPath=\(file.localPath ?? "nil")")
             return
         }
 
-        // Check if WAV cache already exists
-        let wavPath = (oggPath as NSString).deletingPathExtension + ".wav"
-        if FileManager.default.fileExists(atPath: wavPath) {
-            audioPlayerView.configure(audioPath: wavPath, duration: file.duration)
-            return
-        }
-
-        // Local conversion: OGG -> PCM -> WAV (no network needed, SDK built-in decoder)
-        let pcmPath = (oggPath as NSString).deletingPathExtension + ".pcm"
-        print("[FileDetail] Local transcode: \(oggPath) -> PCM -> WAV")
-
-        JXFileDecoder.shared.oggToPcm(avcPath: oggPath, pcmPath: pcmPath, clearUnfinished: true, channels: 1, ns_agc: false) { [weak self] success, _ in
-            guard success else {
-                print("[FileDetail] OGG -> PCM failed")
-                return
-            }
-            JXFileDecoder.shared.pcmToWav(pcmPath: pcmPath, wavPath: wavPath, channels: 1, simpleRate: 16000) { wavSuccess in
-                // Clean up temporary PCM file
-                try? FileManager.default.removeItem(atPath: pcmPath)
-                DispatchQueue.main.async {
-                    guard wavSuccess else {
-                        print("[FileDetail] PCM -> WAV failed")
-                        return
-                    }
-                    print("[FileDetail] Transcode complete: \(wavPath)")
-                    self?.audioPlayerView.configure(audioPath: wavPath, duration: self?.file.duration ?? 0)
-                }
-            }
-        }
+        print("[FileDetail] Loading audio: \(wavPath)")
+        audioPlayerView.configure(audioPath: wavPath, duration: file.duration)
+        audioPlayerView.isHidden = false
     }
 
     // MARK: - Transcript Display
@@ -619,8 +610,11 @@ final class FileDetailViewController: UIViewController {
         if let summary = file.summaryText, !summary.isEmpty {
             sheet.addAction(UIAlertAction(title: "Copy Summary", style: .default) { _ in UIPasteboard.general.string = summary })
         }
-        if let transcript = file.transcriptJSON, !transcript.isEmpty {
-            sheet.addAction(UIAlertAction(title: "Copy Transcript", style: .default) { _ in UIPasteboard.general.string = transcript })
+        if !transcriptResults.isEmpty {
+            sheet.addAction(UIAlertAction(title: "Copy Transcript", style: .default) { [weak self] _ in
+                let plainText = self?.transcriptResults.map { $0.text ?? "" }.joined(separator: "\n\n") ?? ""
+                UIPasteboard.general.string = plainText
+            })
         }
         sheet.addAction(UIAlertAction(title: "Delete Recording", style: .destructive) { [weak self] _ in self?.handleDelete() })
         sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))

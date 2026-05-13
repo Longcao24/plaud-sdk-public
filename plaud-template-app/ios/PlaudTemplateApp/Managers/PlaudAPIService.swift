@@ -416,7 +416,7 @@ struct TranscriptionData: Decodable {
     }
 }
 
-struct TranscriptionResult: Decodable {
+struct TranscriptionResult: Codable {
     let speakerId: String?
     let start: Double?
     let end: Double?

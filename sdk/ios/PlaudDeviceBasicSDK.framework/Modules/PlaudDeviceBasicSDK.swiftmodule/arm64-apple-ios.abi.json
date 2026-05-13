@@ -74117,35 +74117,35 @@
     {
       "filePath": "\/Users\/panyue\/Desktop\/project\/TOB\/private\/flutter-tob\/tb-plaud-mobile\/ios\/SDK\/SDKLibs\/PlaudDeviceBasicSDK\/swiftfiles\/PlaudDeviceAgent.swift",
       "kind": "IntegerLiteral",
-      "offset": 56011,
+      "offset": 53240,
       "length": 2,
       "value": "-1"
     },
     {
       "filePath": "\/Users\/panyue\/Desktop\/project\/TOB\/private\/flutter-tob\/tb-plaud-mobile\/ios\/SDK\/SDKLibs\/PlaudDeviceBasicSDK\/swiftfiles\/PlaudDeviceAgent.swift",
       "kind": "StringLiteral",
-      "offset": 56056,
+      "offset": 53285,
       "length": 2,
       "value": "\"\""
     },
     {
       "filePath": "\/Users\/panyue\/Desktop\/project\/TOB\/private\/flutter-tob\/tb-plaud-mobile\/ios\/SDK\/SDKLibs\/PlaudDeviceBasicSDK\/swiftfiles\/PlaudDeviceAgent.swift",
       "kind": "IntegerLiteral",
-      "offset": 56152,
+      "offset": 53381,
       "length": 1,
       "value": "1"
     },
     {
       "filePath": "\/Users\/panyue\/Desktop\/project\/TOB\/private\/flutter-tob\/tb-plaud-mobile\/ios\/SDK\/SDKLibs\/PlaudDeviceBasicSDK\/swiftfiles\/PlaudDeviceAgent.swift",
       "kind": "IntegerLiteral",
-      "offset": 57286,
+      "offset": 54515,
       "length": 1,
       "value": "1"
     },
     {
       "filePath": "\/Users\/panyue\/Desktop\/project\/TOB\/private\/flutter-tob\/tb-plaud-mobile\/ios\/SDK\/SDKLibs\/PlaudDeviceBasicSDK\/swiftfiles\/PlaudDeviceAgent.swift",
       "kind": "Dictionary",
-      "offset": 71174,
+      "offset": 68403,
       "length": 3,
       "value": "[]"
     },

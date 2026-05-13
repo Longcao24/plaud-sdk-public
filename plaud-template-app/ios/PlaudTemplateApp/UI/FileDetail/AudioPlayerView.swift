@@ -2,10 +2,15 @@ import UIKit
 import AVFoundation
 
 /// Bottom floating audio player (Figma style: frosted glass + time + progress bar + controls)
-final class AudioPlayerView: UIView {
+final class AudioPlayerView: UIView, AVAudioPlayerDelegate {
 
     private var player: AVAudioPlayer?
     private var displayLink: CADisplayLink?
+
+    deinit {
+        displayLink?.invalidate()
+        player?.stop()
+    }
 
     // Time
     private let currentTimeLabel: UILabel = {
@@ -146,6 +151,7 @@ final class AudioPlayerView: UIView {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
             try AVAudioSession.sharedInstance().setActive(true)
             player = try AVAudioPlayer(contentsOf: url)
+            player?.delegate = self
             player?.prepareToPlay()
             if let d = player?.duration, d > 0 {
                 totalTimeLabel.text = formatTime(d)
@@ -154,6 +160,17 @@ final class AudioPlayerView: UIView {
         } catch {
             print("[AudioPlayer] Load failed: \(error.localizedDescription)")
         }
+    }
+
+    // MARK: - AVAudioPlayerDelegate
+
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        isPaused = true
+        stopUpdating()
+        updatePlayPauseIcon()
+        currentTimeLabel.text = formatTime(0)
+        progressSlider.value = 0
+        player.currentTime = 0
     }
 
     // MARK: - Actions
@@ -221,12 +238,6 @@ final class AudioPlayerView: UIView {
         guard let player = player else { return }
         currentTimeLabel.text = formatTime(player.currentTime)
         progressSlider.value = player.duration > 0 ? Float(player.currentTime / player.duration) : 0
-
-        if !player.isPlaying && !isPaused && player.currentTime >= player.duration - 0.1 {
-            isPaused = true
-            stopUpdating()
-            updatePlayPauseIcon()
-        }
     }
 
     private func formatTime(_ seconds: TimeInterval) -> String {

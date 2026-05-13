@@ -68,6 +68,8 @@ final class DeviceManager: NSObject, DeviceManagerProtocol {
     private(set) var isOTAInProgress = false
     private var autoReconnectTimer: Timer?
     private var autoReconnectAttempts = 0
+    /// Add Device 流程中禁用自动重连
+    var suppressAutoReconnect = false
 
     /// User Access Token — prefers UserAccessToken, falls back to legacy PartnerToken
     var userAccessToken: String {
@@ -254,7 +256,9 @@ extension DeviceManager: PlaudDeviceAgentProtocol {
         }
 
         // Auto reconnect: connect automatically when the last bound device is found
-        if let lastSN = RecordingStore.shared.lastConnectedDeviceSN,
+        // suppressAutoReconnect = true 时跳过（Add Device 流程中不自动重连旧设备）
+        if !suppressAutoReconnect,
+           let lastSN = RecordingStore.shared.lastConnectedDeviceSN,
            let match = bleDevices.first(where: { $0.serialNumber == lastSN }),
            case .scanning = connectionStateSubject.value {
             let userId = RecordingStore.shared.userId ?? ""
