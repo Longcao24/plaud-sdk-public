@@ -12,6 +12,7 @@ struct RecordingFile: Identifiable, Codable {
     var localPath: String?            // Local audio path (available after sync)
     var summaryText: String?          // AI summary
     var transcriptJSON: String?       // Transcription data JSON
+    var marks: [Double]?              // Flag timestamps in seconds
 
     var isSynced: Bool { localPath != nil }
 }

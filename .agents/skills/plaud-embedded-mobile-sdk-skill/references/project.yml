@@ -1,6 +1,6 @@
 name: PlaudTemplateApp
 options:
-  bundleIdPrefix: com.plaud
+  bundleIdPrefix: com.your-organization
   projectFormat: Xcode 14.0
   postGenCommand: perl -0pi -e 's/objectVersion = \d+;/objectVersion = 56;/; s/\n\t\t\tpreferredProjectObjectVersion = \d+;//; s/\n\t\t\tminimizedProjectReferenceProxies = 1;//; s/\n\t\t\tcompatibilityVersion = "Xcode 14.0";//g; s|(\/\* Begin PBXProject section \*\/.*?buildConfigurationList = .*?;\n)|$1\t\t\tcompatibilityVersion = "Xcode 14.0";\n|s' PlaudTemplateApp.xcodeproj/project.pbxproj
   deploymentTarget:
@@ -30,7 +30,7 @@ targets:
     sources:
       - path: PlaudTemplateApp
       - path: ../../sdk/ios/PlaudDeviceBasicSDK.bundle
-        type: bundle
+        buildPhase: resources
     dependencies:
       - framework: ../../sdk/ios/PlaudDeviceBasicSDK.framework
         embed: true
@@ -41,6 +41,7 @@ targets:
     info:
       path: PlaudTemplateApp/Info.plist
       properties:
+        CFBundleDisplayName: AppName
         UILaunchScreen:
           UIColorName: "systemBackground"
         UserAccessToken: $(USER_ACCESS_TOKEN)

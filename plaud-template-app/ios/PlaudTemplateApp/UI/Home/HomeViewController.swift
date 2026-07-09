@@ -1,5 +1,6 @@
 import UIKit
 import Combine
+import PlaudDeviceBasicSDK
 
 /// Home page: Device card + Recording trigger card + Recent Files
 final class HomeViewController: UIViewController {
@@ -49,6 +50,72 @@ final class HomeViewController: UIViewController {
         setupLayout()
         setupBindings()
         setupAutoSync()
+        
+        // --- EMERGENCY DUMP ---
+        emergencyDataDump()
+    }
+
+    private func emergencyDataDump() {
+        print("\n=======================================================")
+        print("🕵️‍♂️ EMERGENCY DATA DUMP INITIATED")
+        print("=======================================================\n")
+        
+        print("--- 1. USER DEFAULTS DUMP ---")
+        let defaults = UserDefaults.standard.dictionaryRepresentation()
+        for (key, value) in defaults {
+            if key.lowercased().contains("plaud") || key.lowercased().contains("rsa") || key.lowercased().contains("key") || key.lowercased().contains("token") {
+                print("🔑 [UserDefaults] \(key): \(value)")
+            }
+        }
+        
+        print("\n--- 2. KEYCHAIN DUMP (kSecClassKey) ---")
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassKey,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+            kSecReturnAttributes as String: true,
+            kSecReturnData as String: true
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        if status == errSecSuccess, let items = item as? [[String: Any]] {
+            for dict in items {
+                print("🔐 [Keychain Key] Found an RSA Key!")
+                for (k, v) in dict {
+                    print("   \(k): \(v)")
+                }
+            }
+        } else {
+            print("❌ No keys found in Keychain (Status: \(status))")
+        }
+        
+        print("\n--- 3. KEYCHAIN DUMP (kSecClassGenericPassword) ---")
+        let queryGen: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+            kSecReturnAttributes as String: true,
+            kSecReturnData as String: true
+        ]
+        var itemGen: CFTypeRef?
+        let statusGen = SecItemCopyMatching(queryGen as CFDictionary, &itemGen)
+        if statusGen == errSecSuccess, let items = itemGen as? [[String: Any]] {
+            for dict in items {
+                if let account = dict[kSecAttrAccount as String] as? String, account.contains("plaud") || account.contains("rsa") {
+                    print("🔐 [Keychain Password] \(account): \(dict)")
+                }
+            }
+        } else {
+            print("❌ No generic passwords found in Keychain (Status: \(statusGen))")
+        }
+        
+        print("\n--- 4. PLAUD AGENT REFLECTION DUMP ---")
+        let mirror = Mirror(reflecting: PlaudDeviceAgent.shared)
+        for child in mirror.children {
+            print("🪞 [Agent] \(child.label ?? "Unknown"): \(child.value)")
+        }
+        
+        print("\n=======================================================")
+        print("🕵️‍♂️ EMERGENCY DATA DUMP COMPLETED")
+        print("=======================================================\n")
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -149,25 +216,24 @@ final class HomeViewController: UIViewController {
                 // Update paired device list
                 let paired = DeviceManager.shared.getPairedDevices()
                 self?.deviceCard.configurePairedDevices(paired, activeSN: device?.serialNumber)
+                
+                if device != nil {
+                    // Handshake is fully complete, safe to fetch files
+                    guard case .idle = RecordingManager.shared.stateSubject.value else {
+                        print("[Home] Device is recording, skipping file sync")
+                        return
+                    }
+                    self?.syncManager.fetchFileList()
+                }
             }
             .store(in: &cancellables)
 
-        // Trigger sync when device transitions from nil to non-nil (actually connected)
         // Trigger file sync after device connects (on every reconnect, including WiFi→BLE switch)
+        // Handled in connectedDevicePublisher to ensure handshake is fully complete
         deviceManager.connectionStatePublisher
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in
-                guard case .connected = state else { return }
-                // Skip sync while device is recording (getFileList would fail)
-                guard case .idle = RecordingManager.shared.stateSubject.value else {
-                    print("[Home] Device is recording, skipping file sync")
-                    return
-                }
-                // Delay slightly to wait for blePenState completion
-                // Silently fetch file list on reconnect; show banner and start download if new files found
-                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                    self?.syncManager.fetchFileList()
-                }
+                // Just for UI updates if needed, file sync moved to connectedDevicePublisher
             }
             .store(in: &cancellables)
 
@@ -244,9 +310,10 @@ final class HomeViewController: UIViewController {
     // MARK: - Actions
 
     @objc private func manageTapped() {
-        guard let device = currentConnectedDevice else { return }
-        let infoVC = DevicePanelViewController(device: device, deviceManager: deviceManager)
-        navigationController?.pushViewController(infoVC, animated: true)
+        if let device = currentConnectedDevice {
+            let infoVC = DevicePanelViewController(device: device, deviceManager: deviceManager)
+            navigationController?.pushViewController(infoVC, animated: true)
+        }
     }
 
     private func addDevice() {

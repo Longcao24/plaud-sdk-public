@@ -6,6 +6,9 @@ final class AudioPlayerView: UIView, AVAudioPlayerDelegate {
 
     private var player: AVAudioPlayer?
     private var displayLink: CADisplayLink?
+    private var marks: [Double] = []
+    private var markViews: [UIView] = []
+    private var duration: TimeInterval = 0
 
     deinit {
         displayLink?.invalidate()
@@ -76,6 +79,11 @@ final class AudioPlayerView: UIView, AVAudioPlayerDelegate {
     }
     required init?(coder: NSCoder) { fatalError() }
 
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        updateMarkPositions()
+    }
+
     private func setup() {
         backgroundColor = UIColor.white.withAlphaComponent(0.7)
         layer.cornerRadius = 12
@@ -136,14 +144,55 @@ final class AudioPlayerView: UIView, AVAudioPlayerDelegate {
     // MARK: - Configuration
 
     /// Configure with a playable audio path (wav/mp3) and duration
-    func configure(audioPath: String, duration: TimeInterval) {
+    func configure(audioPath: String, duration: TimeInterval, marks: [Double]?) {
+        self.duration = duration
+        self.marks = marks ?? []
+        // Add a fake mark at 50% of duration for testing UI
+        if duration > 0, !self.marks.contains(duration / 2) {
+            self.marks.append(duration / 2)
+        }
+        
         totalTimeLabel.text = formatTime(duration)
+        
+        setupMarks()
+        
         guard FileManager.default.fileExists(atPath: audioPath) else {
             print("[AudioPlayer] File not found: \(audioPath)")
             return
         }
         let url = URL(fileURLWithPath: audioPath)
         loadPlayer(url: url)
+    }
+
+    private func setupMarks() {
+        markViews.forEach { $0.removeFromSuperview() }
+        markViews.removeAll()
+        
+        for _ in marks {
+            let markView = UIView()
+            markView.backgroundColor = .red
+            markView.layer.cornerRadius = 2
+            markView.isUserInteractionEnabled = false
+            self.addSubview(markView)
+            markViews.append(markView)
+        }
+        
+        setNeedsLayout()
+    }
+
+    private func updateMarkPositions() {
+        guard duration > 0, progressSlider.bounds.width > 0 else { return }
+        let trackRect = progressSlider.trackRect(forBounds: progressSlider.bounds)
+        let trackRectInSelf = progressSlider.convert(trackRect, to: self)
+        let y = trackRectInSelf.midY - 4
+        
+        for (i, markTime) in marks.enumerated() {
+            guard i < markViews.count else { break }
+            let view = markViews[i]
+            let ratio = CGFloat(markTime / duration)
+            let x = trackRectInSelf.minX + trackRectInSelf.width * ratio - 2
+            view.frame = CGRect(x: x, y: y, width: 4, height: 8)
+        }
     }
 
     private func loadPlayer(url: URL) {
@@ -154,7 +203,13 @@ final class AudioPlayerView: UIView, AVAudioPlayerDelegate {
             player?.delegate = self
             player?.prepareToPlay()
             if let d = player?.duration, d > 0 {
+                self.duration = d
+                if !self.marks.contains(d / 2) {
+                    self.marks.append(d / 2)
+                    setupMarks() // Recreate mark views
+                }
                 totalTimeLabel.text = formatTime(d)
+                setNeedsLayout()
             }
             print("[AudioPlayer] Load success: duration=\(player?.duration ?? 0)")
         } catch {

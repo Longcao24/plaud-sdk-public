@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "skills": {
+    "plaud-embedded-mobile-sdk-skill": {
+      "source": "Plaud-AI/plaud-embedded-skills",
+      "sourceType": "github",
+      "skillPath": "skills/PE-mobile-sdk-skill/SKILL.md",
+      "computedHash": "ddfae6dc29a6ab42bb47bd7176d7558d37972a7439d6c8c2ac6768dccda25dc0"
+    },
+    "plaud-embedded-project-setup-skill": {
+      "source": "Plaud-AI/plaud-embedded-skills",
+      "sourceType": "github",
+      "skillPath": "skills/PE-setup-skill/SKILL.md",
+      "computedHash": "aa83656a8f037ca62275ec03920173f1d2f831ba602b57621d30270ac1304fc8"
+    },
+    "plaud-embedded-transcription-api-skill": {
+      "source": "Plaud-AI/plaud-embedded-skills",
+      "sourceType": "github",
+      "skillPath": "skills/PE-transcription-api-skill/SKILL.md",
+      "computedHash": "8f7713fb9d8f804078f55d9691926217238c5076a4f44f4ac58c3f6c82eb8c4e"
+    }
+  }
+}

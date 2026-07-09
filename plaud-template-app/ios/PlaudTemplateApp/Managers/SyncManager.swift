@@ -285,8 +285,10 @@ final class SyncManager: SyncManagerProtocol {
         DispatchQueue.main.async { [weak self] in
             self?.filesSubject.send(RecordingStore.shared.allFiles)
         }
-        // Delete file from device after download completes
-        PlaudDeviceAgent.shared.deleteFile(sessionId: sessionId)
+        // Delete file from device after a slight delay to allow marking tags to be fetched
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            PlaudDeviceAgent.shared.deleteFile(sessionId: sessionId)
+        }
         downloadNextFile()
     }
 
@@ -450,6 +452,11 @@ extension SyncManager: AudioExportCallback {
         let size = (try? FileManager.default.attributesOfItem(atPath: outputPath)[.size] as? Int) ?? 0
         print("[SyncManager] exportAudio complete: sessionId=\(sessionId), path=\(outputPath), exists=\(exists), size=\(size)")
         currentExportSessionId = nil
+        
+        // Fetch marking tags from the device memory (if connected)
+        BleAgent.shared.getRecordMarkingTags(uid: sessionId, startTimestamp: 0, endTimestamp: Int(UInt32.max))
+        BleAgent.shared.getMarking(sessionId)
+        
         handleDownloadComplete(sessionId: sessionId, outputPath: outputPath)
     }
 

@@ -141,6 +141,17 @@ final class RecordingStore {
         cache[idx].summaryText = summary
         saveToDisk()
     }
+    
+    func appendMarks(sessionId: Int, marks: [Double]) {
+        guard let idx = cache.firstIndex(where: { $0.sessionId == sessionId }) else { return }
+        if cache[idx].marks == nil {
+            cache[idx].marks = []
+        }
+        cache[idx].marks?.append(contentsOf: marks)
+        saveToDisk()
+        
+        NotificationCenter.default.post(name: NSNotification.Name("MarksUpdated"), object: nil, userInfo: ["sessionId": sessionId])
+    }
 
     func replaceAllFiles(_ files: [RecordingFile]) {
         cache = files

@@ -115,6 +115,14 @@ final class FileDetailViewController: UIViewController {
         setupLayout()
         loadContent()
         setupTranscriptionBinding()
+        
+        NotificationCenter.default.addObserver(forName: NSNotification.Name("MarksUpdated"), object: nil, queue: .main) { [weak self] notif in
+            guard let self = self, let sid = notif.userInfo?["sessionId"] as? Int, sid == self.file.sessionId else { return }
+            if let updated = RecordingStore.shared.allFiles.first(where: { $0.sessionId == sid }) {
+                self.file = updated
+                self.prepareAudioPlayer()
+            }
+        }
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -326,6 +334,10 @@ final class FileDetailViewController: UIViewController {
         titleLabel.text = file.name
         metaLabel.text = formatMeta()
 
+        if file.isSynced {
+            prepareAudioPlayer()
+        }
+
         // 从缓存恢复转写结果
         if transcriptResults.isEmpty,
            let json = file.transcriptJSON,
@@ -333,7 +345,6 @@ final class FileDetailViewController: UIViewController {
            let cached = try? JSONDecoder().decode([TranscriptionResult].self, from: data),
            !cached.isEmpty {
             transcriptResults = cached
-            prepareAudioPlayer()
         }
 
         updateTabContent()
@@ -428,7 +439,6 @@ final class FileDetailViewController: UIViewController {
                 emptyTitle.text = "No transcript available"
                 emptySubtitle.text = "Generate to get transcript"
                 generateButton.isHidden = false
-                audioPlayerView.isHidden = true
                 progressLabel.isHidden = true
                 progressSubLabel.isHidden = true
             }
@@ -511,10 +521,13 @@ final class FileDetailViewController: UIViewController {
                     self.showProgress("Submitting transcription...", sub: nil)
                 case .processing(let status):
                     self.showProgress("Processing...", sub: status)
-                case .completed(let results):
-                    self.transcriptResults = results
+                case .completed(let transcript, let summary):
+                    self.transcriptResults = transcript
+                    self.file.summaryText = summary
+                    RecordingStore.shared.updateSummary(id: self.file.id, summary: summary)
+
                     // 存储结构化 JSON（保留 speaker/timestamp），用于缓存恢复
-                    if let jsonData = try? JSONEncoder().encode(results),
+                    if let jsonData = try? JSONEncoder().encode(transcript),
                        let jsonStr = String(data: jsonData, encoding: .utf8) {
                         self.file.transcriptJSON = jsonStr
                         RecordingStore.shared.updateTranscript(id: self.file.id, transcript: jsonStr)
@@ -546,8 +559,8 @@ final class FileDetailViewController: UIViewController {
             return
         }
 
-        print("[FileDetail] Loading audio: \(audioPath)")
-        audioPlayerView.configure(audioPath: audioPath, duration: file.duration)
+        print("[FileDetail] Loading audio: \(audioPath), marks count: \(file.marks?.count ?? 0)")
+        audioPlayerView.configure(audioPath: audioPath, duration: file.duration, marks: file.marks)
         audioPlayerView.isHidden = false
     }
 
@@ -614,6 +627,7 @@ final class FileDetailViewController: UIViewController {
                 let plainText = self?.transcriptResults.map { $0.text ?? "" }.joined(separator: "\n\n") ?? ""
                 UIPasteboard.general.string = plainText
             })
+            sheet.addAction(UIAlertAction(title: "Regenerate Transcript", style: .default) { [weak self] _ in self?.generateTapped() })
         }
         sheet.addAction(UIAlertAction(title: "Delete Recording", style: .destructive) { [weak self] _ in self?.handleDelete() })
         sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))

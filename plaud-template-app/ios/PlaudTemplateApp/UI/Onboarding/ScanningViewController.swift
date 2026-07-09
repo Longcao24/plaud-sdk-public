@@ -1,5 +1,9 @@
 import UIKit
 import Combine
+import CoreBluetooth
+import PlaudBleSDK
+
+
 
 /// Onboarding Screen 2 — Scanning
 ///
@@ -97,7 +101,11 @@ final class ScanningViewController: UIViewController {
             DeviceManager.shared.suppressAutoReconnect = true
             DeviceManager.shared.disconnect()
         }
-        deviceManager.startScan()
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            self?.deviceManager.startScan()
+        }
+        
         startScanAnimation()
     }
 

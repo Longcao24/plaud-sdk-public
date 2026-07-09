@@ -7,7 +7,7 @@ enum TranscriptionState {
     case uploading(Float)
     case submitting
     case processing(String)
-    case completed([TranscriptionResult])  // Structured results
+    case completed(transcript: [TranscriptionResult], summary: String)  // Structured results
     case failed(String)
 }
 
@@ -46,16 +46,104 @@ final class TranscriptionManager {
         stateSubject.send(.uploading(0))
         print("[Transcription] Starting transcription flow: \(audioPath), type=\(actualType)")
 
-        uploadFile(path: audioPath, filetype: actualType) { [weak self] result in
-            switch result {
-            case .success(let downloadUrl):
-                print("[Transcription] Upload complete, downloadUrl obtained")
-                self?.submitAndPoll(fileURL: downloadUrl)
-            case .failure(let error):
-                print("[Transcription] Upload failed: \(error.localizedDescription)")
-                self?.stateSubject.send(.failed("Upload failed: \(error.localizedDescription)"))
+        // Divert to custom API endpoint instead of default Plaud cloud
+        transcribeWithCustomAPI(audioPath: audioPath)
+    }
+
+    private func transcribeWithCustomAPI(audioPath: String) {
+        let url = URL(string: "https://sate-v1-5.ngrok.io/process")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+
+        let boundary = UUID().uuidString
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+
+        var body = Data()
+        let filename = (audioPath as NSString).lastPathComponent
+        let mimeType = "audio/mpeg" // Adjust if needed
+
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"audio_file\"; filename=\"\(filename)\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: \(mimeType)\r\n\r\n".data(using: .utf8)!)
+        
+        if let audioData = try? Data(contentsOf: URL(fileURLWithPath: audioPath)) {
+            body.append(audioData)
+        }
+        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+
+        request.httpBody = body
+
+        self.stateSubject.send(.uploading(50)) // Dummy progress
+
+        let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            if let error = error {
+                DispatchQueue.main.async {
+                    self?.stateSubject.send(.failed("API Error: \(error.localizedDescription)"))
+                }
+                return
+            }
+            guard let data = data else {
+                DispatchQueue.main.async {
+                    self?.stateSubject.send(.failed("No data received"))
+                }
+                return
+            }
+            
+            // Parse response
+            if let responseStr = String(data: data, encoding: .utf8) {
+                print("[Transcription] Custom API Response: \(responseStr)")
+                
+                DispatchQueue.main.async {
+                    do {
+                        if let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] {
+                            var mappedResults: [TranscriptionResult] = []
+                            var fullTranscript = ""
+                            
+                            if let segments = json["segments"] as? [[String: Any]] {
+                                for seg in segments {
+                                    let text = seg["text"] as? String ?? ""
+                                    let start = seg["start"] as? Double ?? 0.0
+                                    let end = seg["end"] as? Double ?? 0.0
+                                    let speaker = seg["speaker"] as? String ?? "Speaker"
+                                    
+                                    let tr = TranscriptionResult(
+                                        speakerId: speaker,
+                                        start: start,
+                                        end: end,
+                                        text: text,
+                                        language: "vi"
+                                    )
+                                    mappedResults.append(tr)
+                                    fullTranscript += text + " "
+                                }
+                            } else {
+                                // Fallback
+                                let transcriptText = json["transcript"] as? String ?? json["text"] as? String ?? "No transcript returned."
+                                fullTranscript = transcriptText
+                                let tr = TranscriptionResult(
+                                    speakerId: "Speaker 1",
+                                    start: 0.0,
+                                    end: 1000.0,
+                                    text: transcriptText,
+                                    language: "en"
+                                )
+                                mappedResults.append(tr)
+                            }
+                            
+                            let summaryText = json["summary"] as? String ?? "No summary returned."
+                            self?.stateSubject.send(.completed(transcript: mappedResults, summary: summaryText))
+                        } else {
+                            // If it's not JSON, just show the raw string as summary
+                            self?.stateSubject.send(.completed(transcript: [], summary: responseStr))
+                        }
+                    } catch {
+                        // Fallback if parsing fails
+                        self?.stateSubject.send(.completed(transcript: [], summary: responseStr))
+                    }
+                }
             }
         }
+        task.resume()
     }
 
     // MARK: - Step 1: File Upload (S3 Multipart 3-step)
@@ -228,7 +316,7 @@ final class TranscriptionManager {
                         let results = resp.data?.results ?? []
                         let fullText = resp.data?.fullText ?? ""
                         print("[Transcription] Transcription complete! textLength=\(fullText.count), resultsCount=\(results.count)")
-                        self.stateSubject.send(.completed(results))
+                        self.stateSubject.send(.completed(transcript: results, summary: ""))
 
                     case "FAILURE", "REVOKED":
                         self.stateSubject.send(.failed("Transcription failed: \(resp.message ?? status)"))

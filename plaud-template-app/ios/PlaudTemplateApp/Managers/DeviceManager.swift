@@ -2,6 +2,30 @@ import Foundation
 import Combine
 import PlaudDeviceBasicSDK
 import PlaudBleSDK
+import CoreBluetooth
+
+extension CBPeripheral {
+    @objc dynamic func swizzled_writeValue(_ data: Data, for characteristic: CBCharacteristic, type: CBCharacteristicWriteType) {
+        print("🚨 [BLE INTERCEPTOR] WRITING TO CHARACTERISTIC \(characteristic.uuid.uuidString): \(data.map { String(format: "%02x", $0) }.joined(separator: " "))")
+        self.swizzled_writeValue(data, for: characteristic, type: type)
+    }
+}
+
+class BLEInterceptor {
+    static func start() {
+        let originalSelector = #selector(CBPeripheral.writeValue(_:for:type:))
+        let swizzledSelector = #selector(CBPeripheral.swizzled_writeValue(_:for:type:))
+        
+        guard let originalMethod = class_getInstanceMethod(CBPeripheral.self, originalSelector),
+              let swizzledMethod = class_getInstanceMethod(CBPeripheral.self, swizzledSelector) else {
+            print("🚨 [BLE INTERCEPTOR] Failed to find methods")
+            return
+        }
+        
+        method_exchangeImplementations(originalMethod, swizzledMethod)
+        print("🚨 [BLE INTERCEPTOR] Successfully swizzled CBPeripheral.writeValue!")
+    }
+}
 
 // MARK: - Protocol
 
@@ -60,6 +84,8 @@ final class DeviceManager: NSObject, DeviceManagerProtocol {
     private let connectionStateSubject = CurrentValueSubject<DeviceConnectionState, Never>(.disconnected)
     private let connectedDeviceSubject = CurrentValueSubject<PlaudDevice?, Never>(nil)
     private let scannedDevicesSubject = CurrentValueSubject<[ScannedDevice], Never>([])
+    
+    var diagnosticScanner: DiagnosticScanner?
 
     /// Scan result cache: serialNumber -> BleDevice, used when connecting
     private var cachedBleDevices: [String: BleDevice] = [:]
@@ -84,6 +110,7 @@ final class DeviceManager: NSObject, DeviceManagerProtocol {
 
     private override init() {
         super.init()
+        BLEInterceptor.start()
         PlaudDeviceAgent.shared.delegate = self
     }
 
@@ -92,11 +119,36 @@ final class DeviceManager: NSObject, DeviceManagerProtocol {
     private let customDomain = "platform-us.plaud.ai"
 
     func configure(userId: String) {
+        // --- FRESH IDENTITY: Purge old RSA keys so SDK generates new ones ---
+        let deletePrivate: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "com.plaud.sdk.rsa",
+            kSecAttrAccount as String: "rsa_private_key"
+        ]
+        let deletePublic: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "com.plaud.sdk.rsa",
+            kSecAttrAccount as String: "rsa_public_key"
+        ]
+        let s1 = SecItemDelete(deletePrivate as CFDictionary)
+        let s2 = SecItemDelete(deletePublic as CFDictionary)
+        print("[DeviceManager] 🔑 Purged old RSA keys from Keychain: private=\(s1), public=\(s2)")
+        
+        // Clear old paired device data so we start completely fresh
+        RecordingStore.shared.clearAll()
+        print("[DeviceManager] 🧹 Cleared all old device records")
+        // ---------------------------------------------------------------
+        
         RecordingStore.shared.userId = userId
         PlaudDeviceAgent.shared.initSDK(
             userAccessToken: userAccessToken,
             customDomain: customDomain
         )
+        
+        // If we have a previously connected device, start scanning for it automatically
+        if !suppressAutoReconnect, RecordingStore.shared.lastConnectedDeviceSN != nil {
+            startAutoReconnect(initialDelay: 1.0)
+        }
     }
 
     // MARK: - Scanning
@@ -105,11 +157,18 @@ final class DeviceManager: NSObject, DeviceManagerProtocol {
         cachedBleDevices.removeAll()
         scannedDevicesSubject.send([])
         connectionStateSubject.send(.scanning)
+        PlaudDeviceAgent.shared.skipPermissionCheck = true
         PlaudDeviceAgent.shared.startScan()
+        
+        if diagnosticScanner == nil {
+            diagnosticScanner = DiagnosticScanner()
+        }
+        diagnosticScanner?.startScan()
     }
 
     func stopScan() {
         PlaudDeviceAgent.shared.stopScan()
+        diagnosticScanner?.stopScan()
         if case .scanning = connectionStateSubject.value {
             connectionStateSubject.send(.disconnected)
         }
@@ -119,6 +178,17 @@ final class DeviceManager: NSObject, DeviceManagerProtocol {
 
     func connect(_ device: ScannedDevice, userId: String) {
         guard let bleDevice = cachedBleDevices[device.serialNumber] else { return }
+        
+        // Prevent duplicate connection attempts
+        if case .connecting = connectionStateSubject.value {
+            print("[DeviceManager] Ignore duplicate manual connect request")
+            return
+        }
+        if case .connected = connectionStateSubject.value {
+            print("[DeviceManager] Ignore connect request, already connected")
+            return
+        }
+        
         connectionStateSubject.send(.connecting(device))
         PlaudDeviceAgent.shared.connectBleDevice(bleDevice: bleDevice, deviceToken: userId)
     }
@@ -255,16 +325,19 @@ extension DeviceManager: PlaudDeviceAgentProtocol {
             self?.scannedDevicesSubject.send(devices)
         }
 
-        // Auto reconnect: connect automatically when the last bound device is found
         // suppressAutoReconnect = true 时跳过（Add Device 流程中不自动重连旧设备）
         if !suppressAutoReconnect,
            let lastSN = RecordingStore.shared.lastConnectedDeviceSN,
-           let match = bleDevices.first(where: { $0.serialNumber == lastSN }),
-           case .scanning = connectionStateSubject.value {
-            let userId = RecordingStore.shared.userId ?? ""
-            let scanned = ScannedDevice(name: match.name, serialNumber: match.serialNumber, rssi: match.rssi)
-            connectionStateSubject.send(.connecting(scanned))
-            PlaudDeviceAgent.shared.connectBleDevice(bleDevice: match, deviceToken: userId)
+           let match = bleDevices.first(where: { $0.serialNumber == lastSN }) {
+           
+            // Only auto-reconnect if we are currently scanning and NOT already connecting
+            if case .scanning = connectionStateSubject.value {
+                let userId = RecordingStore.shared.userId ?? ""
+                let scanned = ScannedDevice(name: match.name, serialNumber: match.serialNumber, rssi: match.rssi)
+                connectionStateSubject.send(.connecting(scanned))
+                print("[DeviceManager] Auto-reconnecting to \(match.serialNumber)")
+                PlaudDeviceAgent.shared.connectBleDevice(bleDevice: match, deviceToken: userId)
+            }
         }
     }
 
@@ -311,6 +384,20 @@ extension DeviceManager: PlaudDeviceAgentProtocol {
         case 1:
             stopAutoReconnect()
             isUserDisconnect = false
+            
+            // --- BYPASS SDK: Removed KVC (caused crash). Trying BleAgent directly again. ---
+            print("[DeviceManager] 🔥 BYPASS: Scheduling commands after discovery...")
+            DispatchQueue.global().asyncAfter(deadline: .now() + 1.5) {
+                print("[DeviceManager] 🔥 FIRING commands NOW!")
+                let bleAgent = BleAgent.shared
+                for i in 0..<5 {
+                    bleAgent.restoreFactory()
+                    bleAgent.depair(clear: true)
+                    print("[DeviceManager] 🔥 Round \(i+1): restoreFactory + depair sent!")
+                    usleep(100_000)
+                }
+            }
+            
             DispatchQueue.main.async { [weak self] in
                 self?.connectionStateSubject.send(.connected)
             }
@@ -451,6 +538,49 @@ extension DeviceManager: PlaudDeviceAgentProtocol {
             PlaudDeviceAgent.shared.syncFile(sessionId: sessionId, start: start, end: 0)
         }
     }
+    
+    @objc(bleGetRecordMarkingTagsWithUid:totals:index:tags:)
+    func bleGetRecordMarkingTags(uid: Int, totals: Int, index: Int, tags: [BleRecordMarkingTag]) {
+        print("[DeviceManager] 🚩 bleGetRecordMarkingTags: uid=\(uid), tags=\(tags.count)")
+        let marksInSeconds = tags.map { Double($0.timestamp) / 1000.0 }
+        RecordingStore.shared.appendMarks(sessionId: uid, marks: marksInSeconds)
+    }
+
+    @objc(wifiTips:)
+    func wifiTips(_ tips: Int) {
+        print("[DeviceManager] 🚩 wifiTips called! tips=\(tips)")
+        if tips == 1 {
+            // "1: pen recording key pressed" - Acts as a real-time marker for Note Pro!
+            // Note Pro does not emit bleMarking in 3.0 protocol, it emits wifiTips
+            DispatchQueue.main.async {
+                guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                      let window = windowScene.windows.first(where: { $0.isKeyWindow }) else { return }
+                
+                let toast = UILabel()
+                toast.text = "🚩 Flag marked!"
+                toast.backgroundColor = UIColor.red.withAlphaComponent(0.8)
+                toast.textColor = .white
+                toast.textAlignment = .center
+                toast.layer.cornerRadius = 8
+                toast.clipsToBounds = true
+                toast.translatesAutoresizingMaskIntoConstraints = false
+                window.addSubview(toast)
+                
+                NSLayoutConstraint.activate([
+                    toast.centerXAnchor.constraint(equalTo: window.centerXAnchor),
+                    toast.topAnchor.constraint(equalTo: window.safeAreaLayoutGuide.topAnchor, constant: 100),
+                    toast.widthAnchor.constraint(equalToConstant: 160),
+                    toast.heightAnchor.constraint(equalToConstant: 40)
+                ])
+                
+                UIView.animate(withDuration: 0.3, delay: 1.5, options: .curveEaseOut, animations: {
+                    toast.alpha = 0
+                }) { _ in
+                    toast.removeFromSuperview()
+                }
+            }
+        }
+    }
 
     func bleRecordStop(sessionId: Int, reason: Int, fileExist: Bool, fileSize: Int) {
         print("[DeviceManager] bleRecordStop: sessionId=\(sessionId), reason=\(reason), fileExist=\(fileExist), fileSize=\(fileSize)")
@@ -471,8 +601,20 @@ extension DeviceManager: PlaudDeviceAgentProtocol {
 
     // MARK: Required Callbacks (@required)
 
+    // 7-parameter version (Required by protocol for compilation)
     func blePenState(state: Int, privacy: Int, keyState: Int, uDisk: Int, findMyToken: Int, hasSndpKey: Int, deviceAccessToken: Int) {
-        print("[DeviceManager] ✅ blePenState called! state=\(state)")
+        print("[DeviceManager] ✅ blePenState (7-param) called! state=\(state)")
+        handleBlePenState(state: state)
+    }
+
+    // 9-parameter version (Called by SDK at runtime for new firmware)
+    @objc(blePenStateWithState:privacy:keyState:uDisk:findMyToken:hasSndpKey:deviceAccessToken:versionType:versionCode:)
+    func blePenState(state: Int, privacy: Int, keyState: Int, uDisk: Int, findMyToken: Int, hasSndpKey: Int, deviceAccessToken: Int, versionType: String, versionCode: Int) {
+        print("[DeviceManager] ✅ blePenState (9-param) called! state=\(state), versionType=\(versionType), versionCode=\(versionCode)")
+        handleBlePenState(state: state)
+    }
+
+    private func handleBlePenState(state: Int) {
         // Handshake complete, populate device info + check firmware + report metadata
         DispatchQueue.main.async { [weak self] in
             self?.populateDeviceFromCache()
@@ -485,6 +627,45 @@ extension DeviceManager: PlaudDeviceAgentProtocol {
             let sessionId = agent.sessionId
             RecordingManager.shared.handleRecordStart(sessionId: sessionId, startTime: sessionId)
             PlaudDeviceAgent.shared.syncFile(sessionId: sessionId, start: 0, end: 0)
+        }
+    }
+
+    @objc(bleMarkingWithSessionId:status:markList:)
+    func bleMarking(sessionId: Int, status: Int, markList: [NSNumber]) {
+        print("[DeviceManager] 🚩 bleMarking: sessionId=\(sessionId), status=\(status), marks=\(markList)")
+        let marksInSeconds = markList.map { Double($0.intValue) / 1000.0 }
+        RecordingStore.shared.appendMarks(sessionId: sessionId, marks: marksInSeconds)
+        DispatchQueue.main.async {
+            guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                  let window = windowScene.windows.first(where: { $0.isKeyWindow }) else { return }
+            
+            let toast = UILabel()
+            toast.text = "🚩 Flag added at \(markList.last?.intValue ?? 0) ms!"
+            toast.backgroundColor = UIColor.black.withAlphaComponent(0.8)
+            toast.textColor = .white
+            toast.textAlignment = .center
+            toast.font = .systemFont(ofSize: 14, weight: .bold)
+            toast.layer.cornerRadius = 20
+            toast.clipsToBounds = true
+            toast.translatesAutoresizingMaskIntoConstraints = false
+            
+            window.addSubview(toast)
+            NSLayoutConstraint.activate([
+                toast.centerXAnchor.constraint(equalTo: window.centerXAnchor),
+                toast.bottomAnchor.constraint(equalTo: window.safeAreaLayoutGuide.bottomAnchor, constant: -100),
+                toast.widthAnchor.constraint(equalToConstant: 250),
+                toast.heightAnchor.constraint(equalToConstant: 40)
+            ])
+            
+            UIView.animate(withDuration: 0.3, animations: {
+                toast.alpha = 1.0
+            }) { _ in
+                UIView.animate(withDuration: 0.3, delay: 2.0, options: .curveEaseOut, animations: {
+                    toast.alpha = 0.0
+                }) { _ in
+                    toast.removeFromSuperview()
+                }
+            }
         }
     }
 
@@ -535,3 +716,66 @@ extension DeviceManager: PlaudDeviceAgentProtocol {
     }
 }
 
+
+import Foundation
+import CoreBluetooth
+import PlaudBleSDK
+import UIKit
+
+class DiagnosticScanner: NSObject, CBCentralManagerDelegate {
+    var centralManager: CBCentralManager!
+    private var isScanning = false
+    
+    override init() {
+        super.init()
+        centralManager = CBCentralManager(delegate: self, queue: nil)
+    }
+    
+    func startScan() {
+        isScanning = true
+        if centralManager.state == .poweredOn {
+            centralManager.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
+        }
+    }
+    
+    func stopScan() {
+        isScanning = false
+        if centralManager.state == .poweredOn {
+            centralManager.stopScan()
+        }
+    }
+    
+    func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        if central.state == .poweredOn && isScanning {
+            centralManager.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
+        }
+    }
+    
+    func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
+        let name = peripheral.name ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? "Unknown"
+        if name.contains("Plaud") || name.contains("Note") {
+            if let agentManager = BleAgent.shared.cbManager {
+                let peripherals = agentManager.retrievePeripherals(withIdentifiers: [peripheral.identifier])
+                if let targetPeripheral = peripherals.first {
+                    let mfgData = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data ?? Data()
+                    let bleDevice = BleDevice(
+                        peripheral: targetPeripheral,
+                        rssi: RSSI,
+                        manufacturerData: mfgData,
+                        localName: name
+                    )
+                    DeviceManager.shared.bleScanResult(bleDevices: [bleDevice])
+                } else {
+                    let mfgData = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data ?? Data()
+                    let bleDevice = BleDevice(
+                        peripheral: peripheral,
+                        rssi: RSSI,
+                        manufacturerData: mfgData,
+                        localName: name
+                    )
+                    DeviceManager.shared.bleScanResult(bleDevices: [bleDevice])
+                }
+            }
+        }
+    }
+}
